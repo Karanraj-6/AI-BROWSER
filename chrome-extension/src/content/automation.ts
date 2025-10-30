@@ -6,30 +6,109 @@ type AutomationAction =
   | { type: 'FILL'; selector: string; value: string }
   | { type: 'EVALUATE_SCRIPT'; code: string };
 
-const waitForElement = async (selector: string, timeout = 5000): Promise<Element | null> => {
-  const start = performance.now();
-  while (performance.now() - start < timeout) {
-    const el = document.querySelector(selector);
-    if (el) return el;
-    // eslint-disable-next-line no-await-in-loop
-    await new Promise((r) => setTimeout(r, 200));
+const waitForDocumentReady = async (): Promise<void> => {
+  if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    return;
   }
-  return null;
+
+  await new Promise<void>((resolve) => {
+    const handleStateChange = () => {
+      if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        document.removeEventListener('readystatechange', handleStateChange);
+        resolve();
+      }
+    };
+    document.addEventListener('readystatechange', handleStateChange);
+  });
+};
+
+const waitForElement = async (selector: string, timeout = 15000): Promise<Element | null> => {
+  await waitForDocumentReady();
+
+  const locate = () => document.querySelector(selector);
+  const immediate = locate();
+  if (immediate) {
+    return immediate;
+  }
+
+  return new Promise((resolve) => {
+    let resolved = false;
+    let observer: MutationObserver | null = null;
+    let pollId: number | null = null;
+    let timeoutId: number | null = null;
+
+    const cleanup = () => {
+      if (observer) {
+        observer.disconnect();
+        observer = null;
+      }
+      if (pollId !== null) {
+        clearInterval(pollId);
+        pollId = null;
+      }
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+    };
+
+    const finish = (element: Element | null) => {
+      if (resolved) {
+        return;
+      }
+      resolved = true;
+      cleanup();
+      resolve(element);
+    };
+
+    const check = () => {
+      const element = locate();
+      if (element) {
+        finish(element);
+        return true;
+      }
+      return false;
+    };
+
+    observer = new MutationObserver(() => {
+      check();
+    });
+
+    const observerTarget = document.body ?? document.documentElement;
+    if (observerTarget) {
+      observer.observe(observerTarget, { childList: true, subtree: true });
+    }
+
+    pollId = window.setInterval(() => {
+      check();
+    }, 200);
+
+    timeoutId = window.setTimeout(() => {
+      finish(null);
+    }, timeout);
+
+    check();
+  });
 };
 
 const handleAction = async (action: AutomationAction): Promise<any> => {
   switch (action.type) {
     case 'CLICK': {
-      const element = await waitForElement(action.selector, 5000) as HTMLElement | null;
+      const element = await waitForElement(action.selector) as HTMLElement | null;
       if (!element) {
         return { success: false, error: 'selector-not-found' };
+      }
+      try {
+        element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' as ScrollBehavior });
+      } catch (error) {
+        // scrollIntoView may throw if the element is detached; ignore and attempt click regardless.
       }
       element.click();
       return { success: true };
     }
 
     case 'FILL': {
-      const input = await waitForElement(action.selector, 5000) as (HTMLInputElement | HTMLTextAreaElement | null);
+      const input = await waitForElement(action.selector) as (HTMLInputElement | HTMLTextAreaElement | null);
       if (!input) {
         return { success: false, error: 'selector-not-found' };
       }

@@ -92,6 +92,26 @@ const buildLocalPagesSummary = async (activeTabId?: number): Promise<string | nu
   return lines.join('\n');
 };
 
+const normalizeUrl = (value: string) => {
+  try {
+    const url = new URL(value, value.startsWith('http') ? undefined : 'https://placeholder.local');
+    // Drop hash fragments to avoid unnecessary navigations when only the hash differs.
+    url.hash = '';
+    // Remove trailing slash except for root
+    const pathname = url.pathname.endsWith('/') && url.pathname !== '/' ? url.pathname.slice(0, -1) : url.pathname;
+    return `${url.protocol}//${url.host}${pathname}${url.search}`;
+  } catch (error) {
+    return value;
+  }
+};
+
+const urlsMatch = (a?: string, b?: string) => {
+  if (!a || !b) {
+    return false;
+  }
+  return normalizeUrl(a) === normalizeUrl(b);
+};
+
 const buildGeminiPayload = (
   history: ChatMessage[],
   prompt: string,
@@ -207,7 +227,7 @@ const callGemini = async (prompt: string, history: ChatMessage[]): Promise<{ rep
 
 const executePlan = async (plan: PlanStep[], tabId?: number) => {
   const results: any[] = [];
-  const tabContext = await getActiveTabContext();
+  let tabContext = await getActiveTabContext();
   for (let index = 0; index < plan.length; index += 1) {
     const step = plan[index];
     notifyPopup('LLM_PROGRESS', {
@@ -224,10 +244,14 @@ const executePlan = async (plan: PlanStep[], tabId?: number) => {
           mergedParams.toolName ||
           // support snake_case from some LLM outputs
           (mergedParams as any).tool_name ||
+          mergedParams.toolCode ||
+          (mergedParams as any).tool_code ||
           mergedParams.name ||
           (step as any).tool ||
           (step as any).toolName ||
-          (step as any).tool_name;
+          (step as any).tool_name ||
+          (step as any).toolCode ||
+          (step as any).tool_code;
         let toolArgs: Record<string, any> | undefined;
         if (!toolName) {
           // Attempt to infer the intended tool from common parameter shapes to reduce
@@ -244,9 +268,12 @@ const executePlan = async (plan: PlanStep[], tabId?: number) => {
               inferredArgs = { selector: mergedParams.selector };
             }
           } else if (mergedParams?.url) {
-            // Prefer navigating the current page rather than opening new pages.
-            inferredName = 'navigate_page';
-            inferredArgs = { type: 'url', url: mergedParams.url };
+            inferredName = 'extension_select_page';
+            inferredArgs = { url: mergedParams.url };
+          } else if (mergedParams?.pageId !== undefined || mergedParams?.page_id !== undefined) {
+            const pageIdValue = mergedParams?.pageId ?? mergedParams?.page_id;
+            inferredName = remoteMcp.isConnected() ? 'select_page' : 'extension_select_page';
+            inferredArgs = { pageId: pageIdValue, page_id: pageIdValue };
           } else if (mergedParams?.code) {
             inferredName = 'extension_evaluate_script';
             inferredArgs = { code: mergedParams.code };
@@ -375,12 +402,46 @@ const executePlan = async (plan: PlanStep[], tabId?: number) => {
             const summaryText = summary ?? `# list_pages response\n## Pages\n0: ${tabContext?.url ?? 'about:blank'} [selected]`;
             actionResult = { content: [{ type: 'text', text: summaryText }] };
           } else if (lname === 'select_page' || lname === 'extension_select_page') {
-            const url = extract('url') ?? extract('pageUrl') ?? extract('page');
-            if (!url) {
-              throw new Error('select-page-missing-url');
+            const initialUrl = extract('url') ?? extract('pageUrl') ?? extract('page');
+            const pageIdRaw = extract('page_id') ?? extract('pageId');
+            let resolvedUrl = initialUrl;
+            if (!resolvedUrl && pageIdRaw !== undefined && !remoteMcp.isConnected()) {
+              const pageIndex = Number(pageIdRaw);
+              if (!Number.isNaN(pageIndex)) {
+                try {
+                  const tabs = await chrome.tabs.query({});
+                  const targetTab = tabs?.[pageIndex];
+                  if (targetTab?.url) {
+                    resolvedUrl = targetTab.url;
+                  }
+                } catch (error) {
+                  // If tab lookup fails continue without resolving url.
+                }
+              }
             }
-            // Instead of selecting another tab, navigate the current tab to the requested URL.
-            actionResult = await mcp.handleAction({ type: 'NAVIGATE', url, tabId });
+
+            if (!resolvedUrl) {
+              if (pageIdRaw !== undefined) {
+                if (remoteMcp.isConnected()) {
+                  actionResult = await remoteMcp.callTool(toolName, toolArgs);
+                } else {
+                  actionResult = { success: true, note: 'no-url-select-skip' };
+                }
+              } else {
+                throw new Error('select-page-missing-url');
+              }
+            }
+            if (!actionResult && resolvedUrl) {
+              // Instead of selecting another tab, navigate the current tab to the requested URL.
+              if (urlsMatch(tabContext?.url, resolvedUrl)) {
+                actionResult = { success: true, note: 'already-selected-tab' };
+              } else {
+                actionResult = await mcp.handleAction({ type: 'NAVIGATE', url: resolvedUrl, tabId });
+                if (actionResult?.success) {
+                  tabContext = await getActiveTabContext();
+                }
+              }
+            }
           } else {
             // Unknown pages tool: forward to MCP if available
             if (!remoteMcp.isConnected()) {
@@ -401,7 +462,14 @@ const executePlan = async (plan: PlanStep[], tabId?: number) => {
             if (!url) {
               throw new Error('select-page-missing-url');
             }
-            actionResult = await mcp.handleAction({ type: 'NAVIGATE', url, tabId });
+            if (urlsMatch(tabContext?.url, url)) {
+              actionResult = { success: true, note: 'already-selected-tab' };
+            } else {
+              actionResult = await mcp.handleAction({ type: 'NAVIGATE', url, tabId });
+              if (actionResult?.success) {
+                tabContext = await getActiveTabContext();
+              }
+            }
           } else {
             // Unknown extension tool: forward if bridge available
             if (!remoteMcp.isConnected()) {
@@ -434,6 +502,9 @@ const executePlan = async (plan: PlanStep[], tabId?: number) => {
         step,
         result: actionResult,
       });
+      if (step.type === 'NAVIGATE' && actionResult?.success) {
+        tabContext = await getActiveTabContext();
+      }
     } catch (error: any) {
       results.push({ success: false, error: error?.message ?? String(error) });
       notifyPopup('LLM_PROGRESS', {
