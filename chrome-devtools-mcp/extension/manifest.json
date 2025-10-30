@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "MCP Attach Helper",
+  "version": "0.1.0",
+  "description": "Attach to the active tab and run simple CDP commands (for local MCP automation).",
+  "permissions": ["debugger", "tabs", "activeTab", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {}
+}
