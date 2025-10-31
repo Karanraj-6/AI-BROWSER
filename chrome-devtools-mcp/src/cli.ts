@@ -154,6 +154,17 @@ export const cliOptions = {
     default: true,
     describe: 'Set to false to exlcude tools related to network.',
   },
+  wsHost: {
+    type: 'string',
+    description:
+      'Hostname or network interface that the MCP WebSocket bridge should bind to. Use 0.0.0.0 when exposing over the public internet.',
+    default: '127.0.0.1',
+  },
+  wsPort: {
+    type: 'number',
+    description: 'Port that the MCP WebSocket bridge should listen on.',
+    default: 8080,
+  },
 } satisfies Record<string, YargsOptions>;
 
 export function parseArguments(version: string, argv = process.argv) {
@@ -206,6 +217,10 @@ export function parseArguments(version: string, argv = process.argv) {
         'Disable tools in the performance category',
       ],
       ['$0 --no-category-network', 'Disable tools in the network category'],
+      [
+        '$0 --wsHost 0.0.0.0 --wsPort 8080',
+        'Expose the WebSocket bridge to external clients on port 8080.',
+      ],
     ]);
 
   return yargsInstance

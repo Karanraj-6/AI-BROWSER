@@ -1,4 +1,4 @@
-version: 2
+npm prune --omit=devversion: 2
 updates:
   - package-ecosystem: npm
     directory: /

@@ -208,7 +208,13 @@ const transportClosed = new Promise<void>(resolve => {
 });
 // Start a WebSocket bridge so browser extensions can connect to MCP over WS.
 try {
-  const wsTransport = new WebSocketServerTransport(8080, '127.0.0.1');
+  const wsHost = typeof args.wsHost === 'string' && args.wsHost.length
+    ? args.wsHost
+    : '127.0.0.1';
+  const wsPort = typeof args.wsPort === 'number' && Number.isFinite(args.wsPort)
+    ? args.wsPort
+    : 8080;
+  const wsTransport = new WebSocketServerTransport(wsPort, wsHost);
   await wsTransport.start();
   // Connect the MCP server to the WebSocket transport as an additional transport.
   // If the Server supports multiple transports, this will allow WS clients to
@@ -219,7 +225,8 @@ try {
     // We call connect on the MCP server instance.
     // @ts-ignore - dynamic additional transport
     await server.connect(wsTransport as any);
-    logger('MCP WebSocket bridge listening on ws://127.0.0.1:8080');
+    const announceHost = wsHost === '0.0.0.0' ? '0.0.0.0' : wsHost;
+    logger(`MCP WebSocket bridge listening on ws://${announceHost}:${wsPort}`);
   } catch (e) {
     logger('Failed to attach WebSocket transport to MCP: ' + (e instanceof Error ? e.message : String(e)));
     // If connecting the transport fails, close the ws server so it doesn't accept connections.

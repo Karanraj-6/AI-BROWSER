@@ -346,6 +346,16 @@ The Chrome DevTools MCP server supports the following configuration option:
   - **Type:** boolean
   - **Default:** `true`
 
+- **`--wsHost`**
+  Hostname or network interface that the MCP WebSocket bridge should bind to. Use `0.0.0.0` to accept connections from remote clients.
+  - **Type:** string
+  - **Default:** `"127.0.0.1"`
+
+- **`--wsPort`**
+  Port for the MCP WebSocket bridge.
+  - **Type:** number
+  - **Default:** `8080`
+
 <!-- END AUTO GENERATED OPTIONS -->
 
 Pass them via the `args` property in the JSON configuration. For example:
@@ -388,6 +398,42 @@ You can connect directly to a Chrome WebSocket endpoint and include custom heade
 To get the WebSocket endpoint from a running Chrome instance, visit `http://127.0.0.1:9222/json/version` and look for the `webSocketDebuggerUrl` field.
 
 You can also run `npx chrome-devtools-mcp@latest --help` to see all available configuration options.
+
+## Hosting on Fast MCP (or any remote MCP provider)
+
+To make this server available to Chrome extensions (or other MCP clients) without requiring a local install, deploy `chrome-devtools-mcp` on a managed MCP host such as [Fast MCP](https://fastmcp.com/). The high-level steps are:
+
+1. **Build the server**
+  ```bash
+  npm ci --omit=dev
+  npm run build
+  ```
+  Bundle the resulting `build/` directory together with `package.json`, `package-lock.json`, and the production `node_modules/` in the artifact you upload to Fast MCP.
+
+2. **Ensure Chrome/Chromium is available**
+  Fast MCP images typically ship with Chromium. If you provide your own container, install the stable Chromium build and expose it via the default path (`/usr/bin/chromium` or `/usr/bin/google-chrome`).
+
+3. **Start the MCP server in headless mode**
+  Use the following launch command when configuring the Fast MCP service:
+  ```bash
+  node build/src/index.js \
+    --headless \
+    --isolated \
+    --wsHost 0.0.0.0 \
+    --wsPort 8080 \
+    --chrome-arg="--no-sandbox" \
+    --chrome-arg="--disable-dev-shm-usage"
+  ```
+  - `--wsHost 0.0.0.0` exposes the bridge externally so the Chrome extension can reach it.
+  - The extra Chrome flags avoid sandbox and `/dev/shm` issues in containerized environments.
+
+4. **Expose the WebSocket endpoint over TLS**
+  The Chrome extension expects a `wss://` URL. Configure Fast MCP (or your reverse proxy) to forward secure WebSocket traffic to the container’s `8080` port. Record the public `wss://` URL—this is what you will paste into the extension settings.
+
+5. **Lock down access (recommended)**
+  Protect the endpoint with Fast MCP’s authentication features (API key or IP allow-list). Anyone who can reach the WebSocket can control the hosted Chrome instance.
+
+Once the service is running, plug the public `wss://` URL into the extension’s **Remote MCP WebSocket URL** field and click **Reconnect**. The popup status indicator will show `MCP connected` when the bridge is reachable.
 
 ## Concepts
 
