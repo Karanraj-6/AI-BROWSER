@@ -17,13 +17,13 @@ type PlanStep = {
 const STORAGE_KEYS = {
   GEMINI_KEY: 'geminiKey',
   AUTO_MODE: 'autoMode',
+  MCP_URL: 'mcpUrl',
 };
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
-const MCP_WS_URL = 'ws://127.0.0.1:8080';
 
 const mcp = new MCPClient();
-const remoteMcp = new MCPBridge(MCP_WS_URL);
+const remoteMcp = new MCPBridge();
 
 const readFromStorage = (keys: string[]): Promise<Record<string, any>> =>
   new Promise((resolve, reject) => {
@@ -47,6 +47,32 @@ const writeToStorage = (values: Record<string, any>): Promise<void> =>
       }
       resolve();
     });
+  });
+
+const removeFromStorage = (keys: string[]): Promise<void> =>
+  new Promise((resolve, reject) => {
+    chrome.storage.local.remove(keys, () => {
+      const lastError = chrome.runtime?.lastError;
+      if (lastError) {
+        reject(new Error(lastError.message));
+        return;
+      }
+      resolve();
+    });
+  });
+
+// Configure the MCP bridge with any persisted endpoint on startup so the agent
+// immediately attempts to connect to a hosted MCP instance when the extension
+// wakes up.
+readFromStorage([STORAGE_KEYS.MCP_URL])
+  .then((values) => {
+    const storedUrl = typeof values?.[STORAGE_KEYS.MCP_URL] === 'string' ? values[STORAGE_KEYS.MCP_URL].trim() : '';
+    if (storedUrl) {
+      remoteMcp.setUrl(storedUrl);
+    }
+  })
+  .catch((error) => {
+    console.warn('Failed to restore MCP URL from storage', error);
   });
 
 const notifyPopup = (type: string, payload: any) => {
@@ -130,7 +156,7 @@ const buildGeminiPayload = (
   const remoteInstruction =
     remoteStatus === 'connected'
       ? `${tabHint}The model is authorized to call any tool exposed by the Chrome DevTools MCP server. Use exact tool identifiers when emitting CALL_TOOL (for example: list_pages, select_page, navigate_page, new_page, extension_click_selector, extension_fill_selector, extension_evaluate_script, etc.). Decide which tools to use based on the user's request and combine them as needed — you do not need to ask for permission before calling tools. Prefer operating inside the user's current Chrome window and navigate within the active tab when possible; open new tabs/pages only when necessary. Wait for navigations to complete before interacting and always select a page (select_page or extension_select_page) only after it is actually open. If an action is potentially destructive (closing pages, deleting data), proceed only if the user explicitly requested it.`
-      : 'The Chrome DevTools MCP bridge is currently unavailable. Do not emit CALL_TOOL steps.';
+      : 'The hosted Chrome DevTools MCP bridge is currently unavailable or not configured. Do not emit CALL_TOOL steps until the connection is restored.';
   const pagesInstruction = pageSummary
     ? `Current open tabs/windows (from list_pages):
 ${pageSummary}
@@ -555,25 +581,43 @@ const handleExecutePlan = async (payload: any) => {
 
 const handleSaveSettings = async (payload: any) => {
   const updates: Record<string, any> = {};
+  const removals: string[] = [];
   if (typeof payload?.geminiKey === 'string') {
     updates[STORAGE_KEYS.GEMINI_KEY] = payload.geminiKey.trim();
   }
   if (typeof payload?.autoMode === 'boolean') {
     updates[STORAGE_KEYS.AUTO_MODE] = payload.autoMode;
   }
-  if (!Object.keys(updates).length) {
-    return { success: true };
+  if (Object.prototype.hasOwnProperty.call(payload ?? {}, 'mcpUrl')) {
+    const rawUrl = typeof payload?.mcpUrl === 'string' ? payload.mcpUrl.trim() : '';
+    if (rawUrl) {
+      updates[STORAGE_KEYS.MCP_URL] = rawUrl;
+      remoteMcp.setUrl(rawUrl);
+    } else {
+      removals.push(STORAGE_KEYS.MCP_URL);
+      remoteMcp.setUrl(null);
+    }
   }
-  await writeToStorage(updates);
+  if (Object.keys(updates).length) {
+    await writeToStorage(updates);
+  }
+  if (removals.length) {
+    await removeFromStorage(removals);
+  }
   return { success: true };
 };
 
 const handleGetSettings = async () => {
-  const values = await readFromStorage([STORAGE_KEYS.GEMINI_KEY, STORAGE_KEYS.AUTO_MODE]);
+  const values = await readFromStorage([
+    STORAGE_KEYS.GEMINI_KEY,
+    STORAGE_KEYS.AUTO_MODE,
+    STORAGE_KEYS.MCP_URL,
+  ]);
   return {
     success: true,
     geminiKey: values?.[STORAGE_KEYS.GEMINI_KEY] ?? null,
     autoMode: values?.[STORAGE_KEYS.AUTO_MODE] ?? false,
+    mcpUrl: values?.[STORAGE_KEYS.MCP_URL] ?? null,
     mcpStatus: remoteMcp.getStatus(),
   };
 };
@@ -587,6 +631,11 @@ const handleCallTool = async (payload: any) => {
   }
   const result = await remoteMcp.callTool(resolvedTool, resolvedArgs);
   return { success: true, result };
+};
+
+const handleReconnectMcp = async () => {
+  remoteMcp.reconnectNow();
+  return { success: true, status: remoteMcp.getStatus() };
 };
 
 // Listen for messages from popup and orchestrate logic
@@ -620,6 +669,9 @@ chrome.runtime.onMessage.addListener((request: any, _sender: any, sendResponse: 
       return true;
     case 'MCP_CALL_TOOL':
       respond(handleCallTool(payload));
+      return true;
+    case 'MCP_RECONNECT':
+      respond(handleReconnectMcp());
       return true;
     default:
       sendResponse({ success: false, error: `unknown-message:${type}` });

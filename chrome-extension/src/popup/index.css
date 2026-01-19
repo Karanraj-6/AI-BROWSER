@@ -22,6 +22,12 @@
   font-size: 18px;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .mcp-status {
   display: flex;
   align-items: center;
@@ -52,6 +58,47 @@
   gap: 8px;
   font-size: 12px;
   color: #475467;
+}
+
+.icon-button {
+  border: 1px solid #d0d5dd;
+  background: #ffffff;
+  color: #344054;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.icon-button:hover:not(:disabled) {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #ffffff;
+}
+
+.icon-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.icon-button--running {
+  background: #12b76a;
+  border-color: #12b76a;
+  color: #ffffff;
+}
+
+.icon-button--starting,
+.icon-button--stopping {
+  background: #f79009;
+  border-color: #f79009;
+  color: #ffffff;
+}
+
+.icon-button--error {
+  background: #f04438;
+  border-color: #f04438;
+  color: #ffffff;
 }
 
 .settings {

@@ -52,10 +52,13 @@ const formatError = (error: unknown) => {
     return 'No plan available to execute.';
   }
   if (message === 'mcp-disconnected') {
-    return 'Connect the Chrome DevTools MCP bridge (npm run dev) before running MCP tools.';
+    return 'Remote MCP is offline or the endpoint is missing. Update the MCP URL in Settings and ensure the hosted service is reachable.';
   }
   if (message === 'mcp-timeout') {
-    return 'MCP bridge timed out. Confirm the MCP server is running and reachable.';
+    return 'Remote MCP request timed out. Verify the hosted endpoint is reachable.';
+  }
+  if (message === 'mcp-bridge-not-connected') {
+    return 'Remote MCP bridge is disconnected. Configure the endpoint in Settings, then reconnect.';
   }
   if (message === 'call-tool-missing-name') {
     return 'Gemini attempted to call a MCP tool without specifying its name.';
@@ -87,7 +90,9 @@ function App() {
   const [geminiKeyInput, setGeminiKeyInput] = useState('');
   const [hasGeminiKey, setHasGeminiKey] = useState(false);
   const [mcpStatus, setMcpStatus] = useState<MCPBridgeStatus>('disconnected');
-  const [mcpAddress] = useState('ws://127.0.0.1:8080');
+  const [mcpUrl, setMcpUrl] = useState('');
+  const [mcpUrlInput, setMcpUrlInput] = useState('');
+  const [reconnecting, setReconnecting] = useState(false);
 
   useEffect(() => {
     sendMessage({ type: 'GET_SETTINGS' })
@@ -99,6 +104,10 @@ function App() {
           }
           if (response.mcpStatus) {
             setMcpStatus(response.mcpStatus);
+          }
+          if (typeof response?.mcpUrl === 'string') {
+            setMcpUrl(response.mcpUrl);
+            setMcpUrlInput(response.mcpUrl);
           }
         }
       })
@@ -152,6 +161,21 @@ function App() {
     }
   };
 
+  const handleReconnectMcp = async () => {
+    setReconnecting(true);
+    try {
+      const response = await sendMessage({ type: 'MCP_RECONNECT' });
+      if (response?.status) {
+        setMcpStatus(response.status);
+      }
+      setStatus('Requested MCP bridge reconnect.');
+    } catch (error) {
+      setStatus(formatError(error));
+    } finally {
+      setReconnecting(false);
+    }
+  };
+
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     const trimmed = input.trim();
@@ -165,7 +189,7 @@ function App() {
     }
 
     const userMessage: ChatMessage = { role: 'user', content: trimmed };
-  const newHistory = [...messages, userMessage];
+    const newHistory = [...messages, userMessage];
     setMessages(newHistory);
     setInput('');
     setLoading(true);
@@ -235,6 +259,14 @@ function App() {
     setGeminiKeyInput('');
   };
 
+  const handleSaveMcpUrl = async () => {
+    const trimmed = mcpUrlInput.trim();
+    await saveSettings({ mcpUrl: trimmed });
+    setMcpUrl(trimmed);
+    setMcpUrlInput(trimmed);
+    setStatus(trimmed ? 'MCP endpoint saved.' : 'Cleared MCP endpoint.');
+  };
+
   const toggleAutoMode = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const checked = event.target.checked;
     setAutoMode(checked);
@@ -281,14 +313,24 @@ function App() {
     <div className="popup-root">
       <header className="popup-header">
         <h1>MCP Agent</h1>
-        <div className={`mcp-status mcp-status--${mcpStatus}`}>
-          <span className="mcp-status__dot" />
-          <span>{mcpStatus === 'connected' ? 'MCP connected' : mcpStatus === 'connecting' ? 'MCP connecting…' : 'MCP disconnected'}</span>
+        <div className="header-actions">
+          <div className={`mcp-status mcp-status--${mcpStatus}`}>
+            <span className="mcp-status__dot" />
+            <span>{mcpStatus === 'connected' ? 'MCP connected' : mcpStatus === 'connecting' ? 'MCP connecting…' : 'MCP disconnected'}</span>
+          </div>
+          <button
+            className="icon-button"
+            onClick={handleReconnectMcp}
+            disabled={reconnecting || !mcpUrl.trim()}
+            title={mcpUrl.trim() ? '' : 'Set the MCP URL in settings first.'}
+          >
+            {reconnecting ? 'Reconnecting…' : 'Reconnect'}
+          </button>
+          <label className="toggle">
+            <input type="checkbox" checked={autoMode} onChange={toggleAutoMode} />
+            <span>Auto agent</span>
+          </label>
         </div>
-        <label className="toggle">
-          <input type="checkbox" checked={autoMode} onChange={toggleAutoMode} />
-          <span>Auto agent</span>
-        </label>
       </header>
 
       <section className="settings">
@@ -308,8 +350,18 @@ function App() {
             </label>
             <button className="primary" onClick={handleSaveGeminiKey}>Save key</button>
             <p className="settings__hint">Keys stay on this device only.</p>
+            <label className="input-group">
+              <span>Remote MCP WebSocket URL</span>
+              <input
+                type="text"
+                value={mcpUrlInput}
+                placeholder="wss://example.com/mcp"
+                onChange={(event) => setMcpUrlInput(event.target.value)}
+              />
+            </label>
+            <button className="primary" onClick={handleSaveMcpUrl} disabled={reconnecting}>Save MCP URL</button>
             <p className="settings__hint">
-              MCP bridge URL: {mcpAddress} ({mcpStatus})
+              Current MCP bridge URL: {mcpUrl || 'Not configured'}
             </p>
           </div>
         ) : null}
